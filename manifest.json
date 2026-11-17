@@ -1,6 +1,7 @@
 {
   "id": "daily-sentence",
   "name": "每日一句",
+  "icon": "docs/icon.png",
   "version": "1.0.0",
   "tier": "js",
   "author": "huochairener",

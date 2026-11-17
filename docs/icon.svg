@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="title">
+  <title id="title">每日一句</title>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5141A1"/>
+      <stop offset="1" stop-color="#087A7B"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#FFFDF5"/>
+      <stop offset="1" stop-color="#FFE9CC"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(399 111) rotate(90) scale(108)">
+      <stop stop-color="#FFE18B" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#FFE18B" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="72" y="68" width="368" height="376" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="11"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#background)"/>
+  <circle cx="399" cy="111" r="108" fill="url(#glow)"/>
+
+  <!-- A little sunrise makes the daily ritual feel fresh. -->
+  <path d="M399 72c5 19 11 25 30 30-19 5-25 11-30 30-5-19-11-25-30-30 19-5 25-11 30-30Z" fill="#FFE18B"/>
+  <circle cx="438" cy="151" r="7" fill="#FFE8A9"/>
+  <circle cx="92" cy="351" r="6" fill="#9BE4CF" opacity=".86"/>
+
+  <!-- A speech-shaped page turns a daily sentence into a simple mark. -->
+  <path d="M133 118c0-20 16-36 36-36h174c20 0 36 16 36 36v181c0 20-16 36-36 36h-55l-52 51v-51h-67c-20 0-36-16-36-36V118Z" fill="#14284C" opacity=".25" filter="url(#shadow)" transform="translate(0 12)"/>
+  <path d="M133 118c0-20 16-36 36-36h174c20 0 36 16 36 36v181c0 20-16 36-36 36h-55l-52 51v-51h-67c-20 0-36-16-36-36V118Z" fill="url(#paper)"/>
+
+  <!-- Opening quote marks and three quiet lines stand in for the sentence. -->
+  <g fill="#F16F55">
+    <path d="M184 139c-13 0-22 9-22 22 0 12 8 20 20 20-1 8-5 15-13 21l11 10c17-12 25-27 25-46 0-17-8-27-21-27Z"/>
+    <path d="M222 139c-13 0-22 9-22 22 0 12 8 20 20 20-1 8-5 15-13 21l11 10c17-12 25-27 25-46 0-17-8-27-21-27Z"/>
+  </g>
+  <g fill="none" stroke="#35345E" stroke-linecap="round" stroke-width="13">
+    <path d="M164 249h153"/>
+    <path d="M164 286h112" opacity=".78"/>
+  </g>
+  <path d="M164 321h82" fill="none" stroke="#35345E" stroke-linecap="round" stroke-width="13" opacity=".58"/>
+  <circle cx="274" cy="321" r="7" fill="#F16F55"/>
+</svg>
