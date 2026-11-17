@@ -1,0 +1,19 @@
+{
+  "id": "daily-sentence",
+  "name": "每日一句",
+  "version": "1.0.0",
+  "tier": "js",
+  "author": "huochairener",
+  "repo": "huochairener/ccgui-plugin-daily-sentence",
+  "license": "MIT",
+  "sdkVersion": "^0.3",
+  "description": "在状态栏左侧展示每日一句，支持多种动画、自定义接口与字段映射，以及按日、小时或分钟自动更新。",
+  "permissions": [
+    "ui:status-bar",
+    "ui:settings-section",
+    "storage",
+    "events",
+    "network:v1.hitokoto.cn",
+    "network:v2.xxapi.cn"
+  ]
+}
