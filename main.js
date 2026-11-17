@@ -168,7 +168,7 @@ export default function activate(ctx) {
     return "到点自动拉取新句；请求失败后按 1 / 2 / 4 / 8 / 16 / 30 分钟退避，之后每 30 分钟重试。";
   }
 
-  // 宿主未承诺 plugin_http_request 的超时语义（SDK 只给 plugin_exec_run 定义了 timeoutMs），
+  // 宿主未承诺 plugin_http_request 的超时语义（SDK 只为进程调用定义 timeoutMs），
   // 插件侧自行兜底：悬挂请求不能让状态栏永久停在"更新中"。
   const HTTP_TIMEOUT_MS = 15000;
   function withTimeout(promise, ms) {
