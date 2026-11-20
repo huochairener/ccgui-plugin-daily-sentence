@@ -63,8 +63,154 @@ function retryDelay(mode, failCount) {
   return Math.min(d, INTERVAL_MS[mode]);
 }
 
+// ---------- 悬浮卡片 ----------
+// 状态栏 chip 与浮层是宿主里两棵独立的 React 树，用一个外部 store 同步
+// （hover 状态、当前句子、刷新入口都在这里）。
+const POP_CLOSE_DELAY_MS = 300; // 鼠标从 chip 移到卡片上的过渡时间
+const POP_COPIED_MS = 1800;     // "已复制" 提示停留时长
+const POP_WIDTH_MAX = 420;
+
+function createPopStore() {
+  const listeners = new Set();
+  let state = { open: false, anchor: null, data: null };
+  let hoverChip = false;
+  let hoverCard = false;
+  let closeTimer = 0;
+  let refreshFn = null;
+
+  function emit(patch) {
+    state = Object.assign({}, state, patch);
+    listeners.forEach((listener) => listener());
+  }
+  function cancelTimer() {
+    if (closeTimer) { clearTimeout(closeTimer); closeTimer = 0; }
+  }
+  function sameData(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.text === b.text && a.from === b.from && a.at === b.at &&
+      a.mode === b.mode && a.err === b.err && !!a.busy === !!b.busy;
+  }
+  function open(anchor) {
+    cancelTimer();
+    if (!state.open || state.anchor !== anchor) emit({ open: true, anchor: anchor });
+  }
+  function close() {
+    cancelTimer();
+    hoverChip = false;
+    hoverCard = false;
+    if (state.open) emit({ open: false });
+  }
+  function scheduleClose() {
+    cancelTimer();
+    closeTimer = setTimeout(() => {
+      closeTimer = 0;
+      // 鼠标还停在 chip 或卡片里就不关（否则移进卡片选文字时会被关掉）
+      if (hoverChip || hoverCard) return;
+      if (state.open) emit({ open: false });
+    }, POP_CLOSE_DELAY_MS);
+  }
+  return {
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    getSnapshot() { return state; },
+    setData(data) { if (!sameData(state.data, data)) emit({ data: data }); },
+    setRefresh(fn) { refreshFn = fn; },
+    refresh() { if (refreshFn) refreshFn(); },
+    open: open,
+    close: close,
+    scheduleClose: scheduleClose,
+    cancelClose: cancelTimer,
+    enterChip(anchor) { hoverChip = true; cancelTimer(); open(anchor); },
+    leaveChip() { hoverChip = false; scheduleClose(); },
+    enterCard() { hoverCard = true; cancelTimer(); },
+    leaveCard() { hoverCard = false; scheduleClose(); },
+  };
+}
+
+// 卡片相对状态栏 chip 的位置（视口坐标；chip 在下半屏时卡片浮在它上方）
+function computePopPos(anchor) {
+  if (!anchor || typeof window === "undefined") return null;
+  const rect = anchor.getBoundingClientRect();
+  const vw = window.innerWidth || 0;
+  const vh = window.innerHeight || 0;
+  // 极窄视口下不能强制拉到 POP_WIDTH_MIN，否则卡片横向溢出；给一个保底下限让宽度自愈
+  const width = Math.min(POP_WIDTH_MAX, Math.max(200, vw - 24));
+  const left = Math.max(12, Math.min(rect.left, Math.max(12, vw - width - 12)));
+  const below = rect.top < vh * 0.5; // chip 在上半屏 → 卡片挂在下方
+  return {
+    left: left,
+    width: width,
+    top: below ? rect.bottom + 10 : null,
+    bottom: below ? null : Math.max(12, vh - rect.top + 10),
+  };
+}
+
+// 按下到抬起移动超过阈值 → 判定为「拖动选词」，不当作点击复制
+function isDragGesture(down, point) {
+  if (!down || !point) return false;
+  return Math.abs(point.x - down.x) > 4 || Math.abs(point.y - down.y) > 4;
+}
+
+// 复制到剪贴板：优先用异步剪贴板 API，失败时退回 execCommand
+async function copyToClipboard(text) {
+  const value = typeof text === "string" ? text : "";
+  if (!value) return false;
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch (e) { /* 继续走兜底方案 */ }
+  try {
+    if (typeof document === "undefined") return false;
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "0";
+    ta.style.width = "1px";
+    ta.style.height = "1px";
+    ta.style.padding = "0";
+    ta.style.border = "none";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    try {
+      ta.focus();
+      ta.select();
+      if (typeof ta.setSelectionRange === "function") ta.setSelectionRange(0, value.length);
+      return !!(document.execCommand ? document.execCommand("copy") : false);
+    } finally {
+      if (ta.parentNode) ta.parentNode.removeChild(ta);
+    }
+  } catch (e) {
+    return false;
+  }
+}
+
+const ICON_PATHS = {
+  refresh: ["M21 3v6h-6", "M20.5 15a9 9 0 1 1-2.13-9.36L21 9"],
+  copy: ["M9 9h11v12H9z", "M15 5V2H3v13h3"],
+  quote: ["M10 11H6a1 1 0 0 1-1-1V7a3 3 0 0 1 3-3h1v2H8a1 1 0 0 0-1 1v1h3v3z", "M19 11h-4a1 1 0 0 1-1-1V7a3 3 0 0 1 3-3h1v2h-1a1 1 0 0 0-1 1v1h3v3z"],
+};
+
 export default function activate(ctx) {
   const { createElement: h, useState, useEffect, useRef, useCallback } = ctx.react;
+  // useSyncExternalStore 需要 React ≥ 18；老宿主 React 版本较低时用等价的 useState+useEffect 兜底，
+  // 避免 StatusChip 渲染时直接抛错导致 chip 本体白屏
+  const useStoreFallback = (subscribe, getSnapshot) => {
+    const [state, setState] = useState(getSnapshot);
+    useEffect(() => {
+      const unsub = subscribe(() => setState(getSnapshot()));
+      setState(getSnapshot());
+      return unsub;
+    }, [subscribe, getSnapshot]);
+    return state;
+  };
+  const useSyncExternalStore = ctx.react.useSyncExternalStore || useStoreFallback;
 
   const ANIM_LABELS = { typewriter: "打字机", scroll: "滚动", fade: "渐隐", none: "无（静态）" };
   const ANIM_DESCS = {
@@ -91,6 +237,9 @@ export default function activate(ctx) {
   const ALLOWED_HOSTS = ["v1.hitokoto.cn", "v2.xxapi.cn"]; // manifest 里已声明 network: 授权的主机
   const K_CFG = "cfg";
   const K_CACHE = "cache";
+  // 悬浮卡片与状态栏 chip 共享的外部 store
+  const pop = createPopStore();
+  const usePop = () => useSyncExternalStore(pop.subscribe, pop.getSnapshot, pop.getSnapshot);
   // 宿主只允许 emit/on 自己插件命名空间下的话题（plugin:<pluginId>:*），裸主题会被拒
   const T_CHANGED = "plugin:" + ctx.pluginId + ":cfg-changed";
   const T_CACHE_CHANGED = "plugin:" + ctx.pluginId + ":cache-changed";
@@ -354,6 +503,7 @@ export default function activate(ctx) {
     const busyRef = useRef(false);     // 同步闸门：由 refresh 直接维护，不依赖 render 滞后
     const queuedRef = useRef(false);  // busy 期间积压的刷新请求，忙完后补跑
     const failRef = useRef(0);        // 连续失败次数（退避用）
+    const chipRef = useRef(null);     // 状态栏 chip 元素：悬浮卡片的定位锚点
 
     useEffect(() => { cfgRef.current = cfg; }, [cfg]);
     useEffect(() => { entryRef.current = entry; }, [entry]);
@@ -481,18 +631,15 @@ export default function activate(ctx) {
     }, [dueTick, refresh]);
 
     const full = entry ? (entry.from ? entry.text + " —— " + entry.from : entry.text) : null;
-    const lines = [];
-    if (full) {
-      lines.push(full);
-      lines.push("更新：" + fmtTime(entry.at) + (busy ? "（更新中…）" : ""));
-      lines.push("自动更新：" + (cfg ? MODE_LABELS[cfg.interval] : MODE_LABELS.daily));
-      if (err) lines.push("上次刷新失败：" + err);
-    } else if (err) {
-      lines.push("加载失败：" + err);
-    } else {
-      lines.push("正在加载…");
-    }
-    lines.push("点击换一句");
+
+    // 老宿主没有浮层扩展点时，退回浏览器原生提示
+    const fallbackTitle = [
+      full || (err ? "加载失败：" + err : "正在加载…"),
+      "更新：" + fmtTime(entry && entry.at) + (busy ? "（更新中…）" : ""),
+      "自动更新：" + (cfg ? MODE_LABELS[cfg.interval] : MODE_LABELS.daily),
+      err ? "上次刷新失败：" + err : null,
+      "点击换一句",
+    ].filter(Boolean).join("\n");
 
     let body;
     if (!full) {
@@ -501,10 +648,38 @@ export default function activate(ctx) {
       body = h(Animated, { text: full, animation: cfg ? cfg.animation : "typewriter" });
     }
 
+    // 把当前状态同步给悬浮卡片（两棵 React 树之间只走 store）
+    useEffect(() => {
+      pop.setData({
+        text: entry ? entry.text : "",
+        from: entry ? entry.from : null,
+        at: entry ? entry.at : null,
+        mode: cfg ? cfg.interval : "daily",
+        busy: busy,
+        err: err,
+      });
+    }, [entry, cfg, busy, err]);
+
+    // 卡片里的「换一句」复用同一个刷新入口
+    useEffect(() => {
+      pop.setRefresh(() => { void refresh(); });
+      return () => pop.setRefresh(null); // 卸载时清掉引用，避免 store 持有旧闭包
+    }, [refresh]);
+
+    const popState = usePop();
+
     return h("button", {
       type: "button",
-      title: lines.join("\n"),
+      ref: chipRef,
+      className: "ds-chip",
+      "aria-label": full ? "每日一句：" + full : "每日一句",
+      "aria-expanded": popState.open,
+      title: overlayReady ? undefined : fallbackTitle,
       onClick: () => { void refresh(); },
+      onMouseEnter: () => { pop.enterChip(chipRef.current); },
+      onMouseLeave: () => { pop.leaveChip(); },
+      onFocus: () => { pop.open(chipRef.current); },
+      onBlur: () => { pop.scheduleClose(); },
       style: {
         display: "inline-block", maxWidth: 360, overflow: "hidden", whiteSpace: "nowrap",
         textOverflow: "ellipsis", verticalAlign: "middle", background: "transparent",
@@ -512,6 +687,166 @@ export default function activate(ctx) {
         padding: "0 8px", opacity: busy ? 0.7 : 1, textAlign: "left"
       }
     }, body);
+  }
+
+  // ---------- 悬浮卡片（状态栏 chip 悬浮时出现；可移入选词、可点击复制） ----------
+  function Icon(props) {
+    const size = props.size || 14;
+    const paths = ICON_PATHS[props.name] || [];
+    return h("svg", {
+      width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
+      className: props.className
+    }, paths.map((d, i) => h("path", { key: i, d: d })));
+  }
+
+  function Popover() {
+    const state = usePop();
+    const cardRef = useRef(null);
+    const quoteRef = useRef(null);  // 句子块：用来判断选区是否落在句子里
+    const downRef = useRef(null);   // 按下位置：用来区分「点击」和「拖动选词」
+    const copyTimerRef = useRef(0);
+    const [posState, setPosState] = useState(null);
+    const [copied, setCopied] = useState(false);
+    const data = state.data || {};
+    const text = data.text || "";
+    const from = data.from || "";
+    const full = text ? (from ? text + " —— " + from : text) : "";
+
+    // 位置跟随状态栏 chip（窗口尺寸 / chip 宽度变化时重算）
+    useEffect(() => {
+      if (!state.open || !state.anchor) { setPosState(null); return; }
+      const update = () => setPosState(computePopPos(state.anchor));
+      update();
+      let raf = 0;
+      const onScroll = () => {
+        if (raf) return;
+        raf = requestAnimationFrame(() => { raf = 0; update(); });
+      };
+      window.addEventListener("resize", update);
+      window.addEventListener("scroll", onScroll, true);
+      let ro = null;
+      if (typeof ResizeObserver === "function") {
+        ro = new ResizeObserver(update);
+        ro.observe(state.anchor);
+      }
+      return () => {
+        window.removeEventListener("resize", update);
+        window.removeEventListener("scroll", onScroll, true);
+        if (raf) cancelAnimationFrame(raf);
+        if (ro) ro.disconnect();
+      };
+    }, [state.open, state.anchor]);
+
+    // Esc 关闭 / 点击卡片外部关闭（点 chip 本身不关，chip 点击是"换一句"）
+    useEffect(() => {
+      if (!state.open) return;
+      const onKey = (e) => { if (e.key === "Escape") pop.close(); };
+      const onPointerDown = (e) => {
+        const card = cardRef.current;
+        const anchor = state.anchor;
+        if (card && card.contains(e.target)) return;
+        if (anchor && anchor.contains(e.target)) return;
+        pop.close();
+      };
+      document.addEventListener("keydown", onKey);
+      document.addEventListener("pointerdown", onPointerDown, true);
+      return () => {
+        document.removeEventListener("keydown", onKey);
+        document.removeEventListener("pointerdown", onPointerDown, true);
+      };
+    }, [state.open, state.anchor]);
+
+    useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
+
+    // 每次打开都重置「已复制」提示
+    useEffect(() => { if (state.open) setCopied(false); }, [state.open]);
+
+    const doCopy = async () => {
+      if (!full) return;
+      const ok = await copyToClipboard(full);
+      if (!ok) return;
+      setCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), POP_COPIED_MS);
+    };
+
+    const onQuoteClick = (e) => {
+      const down = downRef.current;
+      downRef.current = null;
+      // 拖动选词：让浏览器自己处理选区，不触发整句复制
+      if (isDragGesture(down, { x: e.clientX, y: e.clientY })) return;
+      // 双击（或多次点击）：把选词手势交给浏览器，避免整句进剪贴板后与选区错乱
+      if (e.detail > 1) return;
+      // 已经选中句子的一部分：交给用户自己复制选中的内容
+      const quote = quoteRef.current;
+      const sel = typeof window !== "undefined" && typeof window.getSelection === "function"
+        ? window.getSelection() : null;
+      if (quote && sel && !sel.isCollapsed && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        if (quote.contains(range.commonAncestorContainer)) return;
+      }
+      void doCopy();
+    };
+
+    if (!state.open) return null;
+
+    // 首次渲染时 posState 还没算出来，先算一次避免卡片闪到左上角
+    const pos = posState || computePopPos(state.anchor);
+    const style = pos
+      ? { left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom }
+      : { left: 12, width: POP_WIDTH_MAX, top: 12, bottom: "auto" };
+
+    return h("div", { className: "ds-pop-layer" },
+      h("div", {
+        ref: cardRef,
+        className: "ds-pop",
+        role: "dialog",
+        "aria-label": "每日一句",
+        style: style,
+        onMouseEnter: () => { pop.enterCard(); },
+        onMouseLeave: () => { pop.leaveCard(); },
+      },
+        h("div", { className: "ds-pop-head" },
+          h("span", { className: "ds-pop-mark", "aria-hidden": true }, h(Icon, { name: "quote", size: 13 })),
+          h("span", { className: "ds-pop-title" }, "每日一句"),
+          h("span", { className: "ds-pop-mode" }, MODE_LABELS[data.mode] || MODE_LABELS.daily),
+          h("button", {
+            type: "button", className: "ds-pop-icon", "aria-label": "换一句", title: "换一句",
+            onClick: () => { pop.refresh(); }
+          }, h(Icon, { name: "refresh" }))),
+
+        h("div", { className: "ds-pop-body" },
+          text
+            ? h("blockquote", {
+              ref: quoteRef,
+              className: "ds-pop-quote" + (copied ? " is-copied" : ""),
+              onMouseDown: (e) => { downRef.current = { x: e.clientX, y: e.clientY }; },
+              onClick: onQuoteClick,
+            },
+              h("p", { className: "ds-pop-text" }, text),
+              from ? h("cite", { className: "ds-pop-from" }, "—— " + from) : null)
+            : h("p", { className: "ds-pop-empty" },
+              data.err ? "加载失败：" + data.err : (data.busy ? "正在加载…" : "暂无句子"))),
+
+        h("div", { className: "ds-pop-foot" },
+          h("div", { className: "ds-pop-meta" },
+            h("span", null, "更新于 " + fmtTime(data.at) + (data.busy ? "（更新中…）" : "")),
+            data.err ? h("span", { className: "ds-pop-err" }, "刷新失败：" + data.err) : null),
+          h("div", { className: "ds-pop-actions" },
+            h("button", {
+              type: "button", className: "ds-pop-btn", onClick: () => { void doCopy(); },
+              disabled: !full
+            }, h(Icon, { name: "copy" }), copied ? "已复制" : "复制"),
+            h("button", { type: "button", className: "ds-pop-btn", onClick: () => { pop.refresh(); } }, "换一句"),
+            h("button", {
+              type: "button", className: "ds-pop-btn is-ghost", onClick: () => {
+                pop.close();
+                try { ctx.ui.openSettings(); } catch (e) { /* 宿主不支持则忽略 */ }
+              }
+            }, "设置"))),
+
+        h("div", { className: "ds-pop-tip" }, "点击句子复制整句 · 按住拖动可只选部分文字")));
   }
 
   // ---------- 设置页小组件 ----------
@@ -630,7 +965,7 @@ export default function activate(ctx) {
         h("div", { className: "ds-badge" }, "❝"),
         h("div", null,
           h("h3", { className: "ds-title" }, "每日一句"),
-          h("p", { className: "ds-sub" }, "状态栏最左侧展示一句话，点击可立即换句"))),
+          h("p", { className: "ds-sub" }, "状态栏最左侧展示一句话，悬浮可展开卡片，点击可立即换句"))),
 
       // 预览
       h("div", { className: "ds-preview" },
@@ -733,6 +1068,15 @@ export default function activate(ctx) {
   }
 
   // ---------- 注册 ----------
+  // 悬浮卡片：状态栏 chip 悬浮时出现（鼠标可以移进去选文字、点句子复制）
+  let overlayReady = false;
+  try {
+    ctx.ui.registerOverlay({ key: "daily-sentence-popover", component: Popover, order: 100 });
+    overlayReady = true;
+  } catch (e) {
+    overlayReady = false; // 老宿主没有浮层扩展点：chip 退回原生 title 提示
+  }
+
   ctx.ui.registerStatusBarItem({ key: "daily-sentence-chip", component: StatusChip, zone: "start", order: -100 });
   ctx.ui.registerSettingsSection({ key: "daily-sentence-settings", label: () => "每日一句", component: SettingsSection });
 }

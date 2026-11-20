@@ -9,10 +9,10 @@ const source = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8")
   .replace(
     'ctx.ui.registerSettingsSection({ key: "daily-sentence-settings", label: () => "每日一句", component: SettingsSection });',
     'ctx.ui.registerSettingsSection({ key: "daily-sentence-settings", label: () => "每日一句", component: SettingsSection });\n' +
-      "globalThis.__test = { normalize, nextDue, isFresh, retryDelay, PRESETS, configIssue, fetchSentence };"
+      "globalThis.__test = { normalize, nextDue, isFresh, retryDelay, PRESETS, configIssue, fetchSentence, createPopStore, computePopPos, isDragGesture };"
   ) +
-  "\nactivate({ react: {}, ui: { registerStatusBarItem() {}, registerSettingsSection() {} } });";
-const context = { URL };
+  "\nactivate({ react: {}, ui: { registerStatusBarItem() {}, registerOverlay() {}, registerSettingsSection() {} } });";
+const context = { URL, window: { innerWidth: 1200, innerHeight: 800 }, setTimeout, clearTimeout };
 vm.runInNewContext(source, context, { filename: "main.js" });
 const scheduler = context.__test;
 
@@ -75,4 +75,55 @@ test("retryDelay grows exponentially and respects the selected interval cap", ()
   assert.equal(scheduler.retryDelay("hour", 10), 30 * 60 * 1000);
   assert.equal(scheduler.retryDelay("5min", 10), 5 * 60 * 1000);
   assert.equal(scheduler.retryDelay("minute", 3), 60 * 1000);
+});
+
+test("the popover store keeps the card open while the pointer moves into it", async () => {
+  const pop = scheduler.createPopStore();
+  const anchor = { id: "chip" };
+  pop.enterChip(anchor);
+  assert.equal(pop.getSnapshot().open, true);
+  assert.equal(pop.getSnapshot().anchor, anchor);
+
+  // 鼠标离开 chip → 进入卡片：延迟关闭被取消，卡片保持可见
+  pop.leaveChip();
+  pop.enterCard();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(pop.getSnapshot().open, true);
+
+  // 鼠标完全离开 → 卡片关闭
+  pop.leaveCard();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(pop.getSnapshot().open, false);
+});
+
+test("the popover store publishes sentence data only when it changes", () => {
+  const pop = scheduler.createPopStore();
+  const data = { text: "一句", from: "出处", at: 1, mode: "daily", busy: false, err: null };
+  let notified = 0;
+  pop.subscribe(() => { notified += 1; });
+  pop.setData(data);
+  pop.setData(Object.assign({}, data));
+  assert.equal(notified, 1);
+  assert.equal(pop.getSnapshot().data.text, "一句");
+});
+
+test("a drag over the sentence is treated as text selection, not as a copy click", () => {
+  const down = { x: 100, y: 200 };
+  assert.equal(scheduler.isDragGesture(down, { x: 103, y: 202 }), false); // 轻微抖动 → 仍算点击
+  assert.equal(scheduler.isDragGesture(down, { x: 140, y: 202 }), true);  // 横向拖动 → 选词
+  assert.equal(scheduler.isDragGesture(down, { x: 100, y: 260 }), true);  // 纵向拖动 → 选词
+  assert.equal(scheduler.isDragGesture(null, { x: 140, y: 260 }), false);
+});
+
+test("computePopPos anchors the card to the chip and keeps it inside the viewport", () => {
+  const anchor = {
+    getBoundingClientRect: () => ({ top: 700, bottom: 724, left: 40, right: 320 }),
+  };
+  context.window.innerWidth = 1200;
+  context.window.innerHeight = 800;
+  const pos = scheduler.computePopPos(anchor);
+  assert.equal(pos.left, 40);
+  assert.equal(pos.top, null); // chip 在下半屏 → 卡片浮在它上方
+  assert.equal(pos.bottom, 800 - 700 + 10);
+  assert.ok(pos.width <= 1200 - 24);
 });
