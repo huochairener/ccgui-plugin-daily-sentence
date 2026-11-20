@@ -1,0 +1,9 @@
+# 文本文件统一 LF 行尾，避免 Windows/macOS 混合作者产生 CRLF diff 噪音
+*.js text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf
+*.html text eol=lf
+*.svg text eol=lf
